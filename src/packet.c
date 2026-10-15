@@ -1,4 +1,6 @@
+#include <stddef.h>
 #include "../include/packet.h"
+
 
 uint32_t calculate_checksum(const Packet *packet)
 {

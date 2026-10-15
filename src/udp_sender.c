@@ -1,16 +1,14 @@
 #include <stdio.h>
 #include <string.h>
-#include <stdlib.h>
 #include <winsock2.h>
-#include "../include/packet.h"
+
+#include "../include/stop_wait.h"
 
 int main()
 {
     WSADATA wsa;
     SOCKET sock;
     struct sockaddr_in server_addr;
-
-    Packet packet = {0};
 
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
     {
@@ -27,52 +25,52 @@ int main()
         return 1;
     }
 
+    memset(&server_addr, 0, sizeof(server_addr));
+
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
     server_addr.sin_port = htons(9000);
 
-    packet.type = PACKET_DATA;
-    packet.sequence_number = 1;
-    packet.acknowledgement_number = 0;
+    StopWaitState state;
 
-    strcpy((char *)packet.payload, "Hello UDP");
-
-    packet.payload_length = strlen((char *)packet.payload);
-
-    packet.checksum = calculate_checksum(&packet);
-
-    uint8_t buffer[15 + MAX_PAYLOAD_SIZE];
-
-    int packet_size = serialize_packet(&packet, buffer);
-
-    if (packet_size < 0)
-    {
-        printf("Packet serialization failed\n");
-        closesocket(sock);
-        WSACleanup();
-        return 1;
-    }
-
-    int sent = sendto(
+    stop_wait_init(
+        &state,
         sock,
-        (const char *)buffer,
-        packet_size,
-        0,
-        (struct sockaddr *)&server_addr,
-        sizeof(server_addr)
+        &server_addr
     );
 
-    if (sent == SOCKET_ERROR)
+    const char *message = "Hello Stop-and-Wait";
+
+    printf("Starting Stop-and-Wait sender...\n");
+    printf("Initial RTO: %.3f seconds\n",
+           rtt_get_rto(&state.rtt));
+
+    int success = stop_wait_send(
+        &state,
+        (const uint8_t *)message,
+        (uint16_t)strlen(message)
+    );
+
+    if (success)
     {
-        printf("Send failed\n");
+        printf("\nTransfer successful!\n");
     }
     else
     {
-        printf("Packet sent: %d bytes\n", sent);
+        printf("\nTransfer failed!\n");
     }
+
+    printf("Packets sent: %d\n",
+           state.packets_sent);
+
+    printf("Retransmissions: %d\n",
+           state.retransmissions);
+
+    printf("Final RTO: %.3f seconds\n",
+           rtt_get_rto(&state.rtt));
 
     closesocket(sock);
     WSACleanup();
 
-    return 0;
+    return success ? 0 : 1;
 }
