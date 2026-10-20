@@ -93,55 +93,34 @@ int stop_wait_send(
     }
 
     Packet packet;
-
     memset(&packet, 0, sizeof(Packet));
 
     packet.type = PACKET_DATA;
-    packet.sequence_number =
-        state->next_sequence_number;
-
+    packet.sequence_number = state->next_sequence_number;
     packet.acknowledgement_number = 0;
     packet.payload_length = length;
 
-    memcpy(
-        packet.payload,
-        data,
-        length
-    );
+    memcpy(packet.payload, data, length);
+    packet.checksum = calculate_checksum(&packet);
 
-    packet.checksum =
-        calculate_checksum(&packet);
-
-    uint32_t sequence_number =
-        packet.sequence_number;
-
+    uint32_t sequence_number = packet.sequence_number;
     int retransmitted = 0;
     int attempts = 0;
 
-    double rto =
-        rtt_get_rto(&state->rtt);
-
+    double rto = rtt_get_rto(&state->rtt);
     if (rto < MIN_RTO)
     {
         rto = MIN_RTO;
     }
 
-    timer_start(
-        &state->timer,
-        sequence_number
-    );
+    timer_start(&state->timer, sequence_number);
 
     while (attempts < STOP_WAIT_MAX_RETRIES)
     {
-        if (!send_packet(
-                state->socket,
-                &state->peer_address,
-                &packet))
+        if (!send_packet(state->socket, &state->peer_address, &packet))
         {
             printf("Failed to send DATA\n");
-
             timer_stop(&state->timer);
-
             return 0;
         }
 
@@ -150,114 +129,63 @@ int stop_wait_send(
         printf(
             "Sent DATA seq=%u%s\n",
             sequence_number,
-            retransmitted
-                ? " (retransmission)"
-                : ""
+            retransmitted ? " (retransmission)" : ""
         );
 
-        fd_set read_set;
-
-        FD_ZERO(&read_set);
-
-        FD_SET(
-            state->socket,
-            &read_set
-        );
-
-        struct timeval timeout;
-
-        timeout.tv_sec = (long)rto;
-
-        timeout.tv_usec =
-            (long)(
-                (rto - timeout.tv_sec)
-                * 1000000.0
-            );
-
-        int result = select(
-            0,
-            &read_set,
-            NULL,
-            NULL,
-            &timeout
-        );
-
-        if (result == 0)
+        /*
+         * Keep waiting for the matching ACK until this packet's RTO expires.
+         * Invalid, corrupted, unrelated, or non-ACK packets must not trigger
+         * an immediate DATA retransmission.
+         */
+        while (1)
         {
-            attempts++;
+            double elapsed = timer_elapsed(&state->timer);
+            double remaining = rto - elapsed;
 
-            if (attempts >=
-                STOP_WAIT_MAX_RETRIES)
+            if (remaining <= 0.0)
             {
-                printf(
-                    "Maximum retransmission "
-                    "attempts reached\n"
-                );
+                break;
+            }
 
+            fd_set read_set;
+            FD_ZERO(&read_set);
+            FD_SET(state->socket, &read_set);
+
+            struct timeval timeout;
+            timeout.tv_sec = (long)remaining;
+            timeout.tv_usec =
+                (long)((remaining - timeout.tv_sec) * 1000000.0);
+
+            int result = select(0, &read_set, NULL, NULL, &timeout);
+
+            if (result == 0)
+            {
+                /* Recheck elapsed time before deciding the RTO has expired. */
+                continue;
+            }
+
+            if (result == SOCKET_ERROR)
+            {
+                printf("select() failed: %d\n", WSAGetLastError());
                 timer_stop(&state->timer);
-
                 return 0;
             }
 
-            state->retransmissions++;
-
-            retransmitted = 1;
-
-            rto *= 2.0;
-
-            if (rto > MAX_RTO)
+            if (!FD_ISSET(state->socket, &read_set))
             {
-                rto = MAX_RTO;
+                continue;
             }
 
-            printf(
-                "Timeout seq=%u, retry=%d, "
-                "new RTO=%.3f\n",
-                sequence_number,
-                attempts,
-                rto
-            );
-
-            timer_start(
-                &state->timer,
-                sequence_number
-            );
-
-            continue;
-        }
-
-        if (result == SOCKET_ERROR)
-        {
-            printf(
-                "select() failed: %d\n",
-                WSAGetLastError()
-            );
-
-            timer_stop(&state->timer);
-
-            return 0;
-        }
-
-        if (FD_ISSET(
-                state->socket,
-                &read_set))
-        {
-            uint8_t buffer[
-                STOP_WAIT_BUFFER_SIZE
-            ];
-
+            uint8_t buffer[STOP_WAIT_BUFFER_SIZE];
             struct sockaddr_in sender_address;
-
-            int sender_length =
-                sizeof(sender_address);
+            int sender_length = sizeof(sender_address);
 
             int received = recvfrom(
                 state->socket,
                 (char *)buffer,
                 sizeof(buffer),
                 0,
-                (struct sockaddr *)
-                    &sender_address,
+                (struct sockaddr *)&sender_address,
                 &sender_length
             );
 
@@ -273,17 +201,13 @@ int stop_wait_send(
             }
 
             Packet ack;
-
-            if (deserialize_packet(
-                    &ack,
-                    buffer) != 0)
+            if (deserialize_packet(&ack, buffer) != 0)
             {
                 state->corrupted_packets++;
                 continue;
             }
 
-            if (received !=
-                15 + ack.payload_length)
+            if (received != 15 + ack.payload_length)
             {
                 state->corrupted_packets++;
                 continue;
@@ -300,63 +224,64 @@ int stop_wait_send(
                 continue;
             }
 
-            if (ack.acknowledgement_number !=
-                    sequence_number &&
-                ack.sequence_number !=
-                    sequence_number)
+            if (ack.acknowledgement_number != sequence_number &&
+                ack.sequence_number != sequence_number)
             {
                 continue;
             }
 
-            double measured_rtt =
-                timer_elapsed(
-                    &state->timer
-                );
-
-            timer_stop(
-                &state->timer
-            );
+            double measured_rtt = timer_elapsed(&state->timer);
+            timer_stop(&state->timer);
 
             /*
-             * Karn's Algorithm.
-             *
-             * If retransmitted == 1,
-             * the RTT sample is ignored.
+             * Karn's Algorithm:
+             * Ignore RTT samples for packets that were retransmitted.
              */
-            rtt_update(
-                &state->rtt,
-                measured_rtt,
-                retransmitted
-            );
+            rtt_update(&state->rtt, measured_rtt, retransmitted);
 
             if (state->rtt.rto < MIN_RTO)
             {
                 state->rtt.rto = MIN_RTO;
             }
 
-            printf(
-                "Received ACK seq=%u\n",
-                sequence_number
-            );
-
-            printf(
-                "RTT: %.3f seconds\n",
-                measured_rtt
-            );
-
-            printf(
-                "Current RTO: %.3f seconds\n",
-                rtt_get_rto(&state->rtt)
-            );
+            printf("Received ACK seq=%u\n", sequence_number);
+            printf("RTT: %.3f seconds\n", measured_rtt);
+            printf("Current RTO: %.3f seconds\n", rtt_get_rto(&state->rtt));
 
             state->next_sequence_number++;
-
             return 1;
         }
+
+        /* The RTO expired without receiving the matching ACK. */
+        attempts++;
+
+        if (attempts >= STOP_WAIT_MAX_RETRIES)
+        {
+            printf("Maximum retransmission attempts reached\n");
+            timer_stop(&state->timer);
+            return 0;
+        }
+
+        state->retransmissions++;
+        retransmitted = 1;
+
+        rto *= 2.0;
+        if (rto > MAX_RTO)
+        {
+            rto = MAX_RTO;
+        }
+
+        printf(
+            "Timeout seq=%u, retry=%d, new RTO=%.3f\n",
+            sequence_number,
+            attempts,
+            rto
+        );
+
+        timer_start(&state->timer, sequence_number);
     }
 
     timer_stop(&state->timer);
-
     return 0;
 }
 
