@@ -27,6 +27,7 @@ void channel_default_config(ChannelConfig *config)
     config->reorder_rate = 0.0;
     config->min_delay_ms = 0;
     config->max_delay_ms = 0;
+    config->jitter_ms = 0;
     config->seed = 1;
 }
 
@@ -95,10 +96,19 @@ int channel_process(
             (unsigned int)(rand() % (span + 1U));
     }
 
+    if (config->jitter_ms > 0) {
+        unsigned int jitter = (unsigned int)(rand() %
+            (config->jitter_ms + 1U));
+        if (*delay_ms <= UINT_MAX - jitter) {
+            *delay_ms += jitter;
+        } else {
+            *delay_ms = UINT_MAX;
+        }
+    }
+
     /*
-     * Reordering is approximated by adding extra delay to selected
-     * datagrams. A real concurrent forwarding queue is needed to
-     * guarantee out-of-order delivery.
+     * The persistent UDP emulator uses this extra delay with its scheduled
+     * forwarding queue to create actual out-of-order delivery.
      */
     if (random_unit() < config->reorder_rate) {
         if (*delay_ms <= UINT_MAX - 100U) {

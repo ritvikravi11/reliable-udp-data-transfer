@@ -1,0 +1,1 @@
+METRIC protocol=stop_wait bytes=1048576 elapsed_seconds=725.047000 goodput_bytes_per_sec=1446.218 retransmissions=0 source_sha256=bc10091004d85ec8c4fa5a5a0d976b0cc329b68750b45b16c9e90f382055b271 received_sha256=bc10091004d85ec8c4fa5a5a0d976b0cc329b68750b45b16c9e90f382055b271 loss_rate=unknown window_size=1 reorder_rate=unknown seed=unknown

@@ -12,6 +12,7 @@ typedef struct {
     double reorder_rate;    /* 0.0 to 1.0 */
     unsigned int min_delay_ms;
     unsigned int max_delay_ms;
+    unsigned int jitter_ms;
     uint32_t seed;
 } ChannelConfig;
 

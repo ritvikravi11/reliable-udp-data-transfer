@@ -1,0 +1,14 @@
+Final experiment configuration
+
+Input: exactly 10 MiB (10 * 1024 * 1024 bytes)
+Protocols: stop_wait, go_back_n, selective_repeat
+Repetitions: 3
+Loss sweep: 0%, 5%, 10%, 15%, 20%, 25%, 30%
+Window sweep: 1, 4, 8, 16
+Reordering sweep: 0%, 10%, 25%, 50%
+Fixed delay: 0 ms
+Fixed jitter: 0 ms
+Duplication/corruption for the main loss sweep: 0
+Seed: 12345 + repetition index
+Integrity: source and received SHA-256 must match
+Failed transfers: recorded as failed and excluded from aggregates

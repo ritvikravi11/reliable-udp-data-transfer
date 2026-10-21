@@ -1,0 +1,1 @@
+METRIC protocol=selective_repeat bytes=1048576 elapsed_seconds=200.984000 goodput_bytes_per_sec=5217.211 retransmissions=251 source_sha256=bc10091004d85ec8c4fa5a5a0d976b0cc329b68750b45b16c9e90f382055b271 received_sha256=unknown loss_rate=unknown window_size=4 reorder_rate=unknown seed=unknown
