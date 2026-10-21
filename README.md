@@ -19,15 +19,25 @@ This project explores reliable data transfer over UDP by building a UDP-based se
 
 UDP itself does not guarantee delivery, ordering, or duplicate protection. The project investigates how these behaviors can be handled by a reliable-transfer protocol and how channel conditions affect packet delivery.
 
-## Planned Reliable-Transfer Protocols
+## Reliable-Transfer Protocols
 
-The assignment scope includes these protocols:
+The assignment scope includes these implemented protocols:
 
 - Stop-and-Wait ARQ
 - Go-Back-N ARQ
 - Selective Repeat ARQ
 
-**Implementation status:** The current sender/receiver demo and channel-emulator experiments should not be treated as proof that all three ARQ protocols are complete. Update this section when each protocol has been implemented and tested end to end.
+**Implementation status:** Stop-and-Wait, Go-Back-N, and Selective Repeat protocol state machines are implemented in `src/`. The `file_transfer` application provides a file-oriented Windows UDP workflow. Go-Back-N uses cumulative ACKs and whole-window retransmission; Selective Repeat uses individual ACKs, buffering, and per-packet timers.
+
+### Go-Back-N acknowledgement convention
+
+Go-Back-N ACK numbers identify the highest contiguous DATA sequence number
+accepted by the receiver. An ACK for `N` cumulatively acknowledges every DATA
+packet through `N`, so the sender advances `base` to `N + 1`. Before the first
+DATA packet is accepted, the receiver sends `UINT32_MAX` as the explicit
+"no packets acknowledged" sentinel. The sender runs one timer for the oldest
+outstanding packet and retransmits the entire outstanding window when it
+expires.
 
 ## Features and Components
 
@@ -36,6 +46,7 @@ The assignment scope includes these protocols:
 - UDP sender and receiver demonstration
 - Packet types and sequence/acknowledgement fields
 - Packet checksums and packet serialization/deserialization
+- File transfer with START metadata, END termination, and SHA-256 integrity reporting
 
 ### Timing subsystem
 
@@ -44,7 +55,7 @@ The assignment scope includes these protocols:
 - Jacobson/Karels RTT estimation
 - Karn's algorithm considerations for retransmitted packets
 
-The timer subsystem has its own tests. Timer utilities alone do not establish that end-to-end retransmission is working; that requires integration with the ARQ sender and receiver.
+The timer subsystem has its own tests and is used by the ARQ implementations.
 
 ### Channel emulator
 
@@ -55,6 +66,7 @@ The channel emulator can be configured to simulate:
 - Packet reordering
 - Packet corruption
 - Configured packet delay
+- Positive delay jitter
 
 The emulator supports an explicit random seed so an experiment can be repeated with the same seed and configuration.
 
@@ -85,10 +97,18 @@ reliable-udp-data-transfer/
 │   ├── channel.h
 │   └── udp_channel.c
 ├── include/
+│   ├── go_back_n.h
 │   ├── packet.h
+│   ├── selective_repeat.h
+│   ├── sha256.h
 │   └── timer.h
 ├── src/
+│   ├── file_transfer.c
+│   ├── go_back_n.c
 │   ├── packet.c
+│   ├── selective_repeat.c
+│   ├── sha256.c
+│   ├── stop_wait.c
 │   ├── timer.c
 │   ├── udp_sender.c
 │   └── udp_receiver.c
@@ -97,8 +117,9 @@ reliable-udp-data-transfer/
 │   ├── test_timer.c
 │   └── test_timer_manager.c
 ├── scripts/
-│   ├── plot_results.c
-│   └── run_experiments.sh
+│   ├── plot_results.py
+│   ├── run_experiments.py
+│   └── run_integration_tests.py
 └── results/
     ├── channel_stats.csv
     ├── experiment_seeds.csv
@@ -106,13 +127,23 @@ reliable-udp-data-transfer/
     └── plots/
 ```
 
-Exact filenames may vary as the team continues development.
-
 ## Building
 
 Run commands from the repository root in an MSYS2 UCRT64 terminal.
 
-Build the channel emulator:
+Build the applications and tests with the Makefile:
+
+```bash
+make
+```
+
+To build only the file-transfer application:
+
+```bash
+make file_transfer
+```
+
+The channel emulator can be built separately:
 
 ```bash
 gcc -Wall -Wextra -Iinclude -Iemulator \
@@ -120,37 +151,92 @@ gcc -Wall -Wextra -Iinclude -Iemulator \
   -o emulator/udp_channel.exe -lws2_32
 ```
 
-Build the plotting utility:
+The plotting utility is implemented in Python and uses matplotlib only after
+the C protocol runs have completed:
 
 ```bash
-gcc -Wall -Wextra -Iinclude -Iemulator \
-  scripts/plot_results.c -o plot_results.exe -lm
+python scripts/plot_results.py results/experiments.csv
 ```
 
-The sender and receiver executables must also be built from their source files before running the experiment scripts. Use the project's current build instructions or Makefile where available.
+## File-transfer workflow
+
+For a direct transfer, start the receiver and sender with the same UDP port:
+
+```bash
+./file_transfer.exe receive --protocol selective_repeat \
+  --input unused --output received.bin --port 9000
+```
+
+```bash
+./file_transfer.exe send --protocol selective_repeat \
+  --input source.bin --output unused --host 127.0.0.1 --port 9000
+```
+
+Replace `selective_repeat` with `stop_wait` or `go_back_n` as needed. The sender transmits START metadata containing the expected byte count and SHA-256, sends chunks no larger than `MAX_PAYLOAD_SIZE`, waits for acknowledgements and retransmissions, then sends END. The receiver validates metadata, writes chunks in order, verifies byte count and SHA-256, and terminates at END.
+
+To run through the persistent emulator, start the receiver on `9000`, start
+the emulator on `9001`, and point the sender at `9001`:
+
+```bash
+./emulator/udp_channel.exe 9001 9000 0 0 0 0 0 0 12345 15000
+./file_transfer.exe send --protocol selective_repeat \
+  --input source.bin --output unused --host 127.0.0.1 --port 9001
+```
+
+Each process emits a machine-readable line containing fields such as:
+
+```text
+METRIC protocol=... bytes=... elapsed_seconds=... goodput_bytes_per_sec=...
+retransmissions=... source_sha256=... received_sha256=... loss_rate=...
+window_size=... reorder_rate=... seed=...
+```
+
+For a successful transfer, `source_sha256` and `received_sha256` match. The optional `--window`, `--loss`, and `--seed` arguments are accepted for experiment compatibility; direct file transfer does not itself emulate impairments.
+
+## End-to-end integration tests
+
+The channel emulator is a persistent bidirectional forwarder. The sender
+connects to its sender-facing port (default `9001`); the emulator forwards
+traffic to the receiver-facing port (default `9000`) and routes receiver
+ACKs back to the original sender. It keeps a bounded scheduled queue for
+delayed, duplicated, and reordered datagrams.
+
+Run the complete deterministic smoke matrix after building `file_transfer.exe`
+and `emulator/udp_channel.exe`:
+
+```bash
+python scripts/run_integration_tests.py
+```
+
+Run one focused case:
+
+```bash
+python scripts/run_integration_tests.py \
+  --protocol go_back_n --scenario combined
+```
+
+The runner starts and monitors the receiver, emulator, and sender, applies
+timeouts, terminates processes safely, compares source/received SHA-256
+digests, and reports each scenario's actual result. The emulator also accepts
+Ctrl+C and an optional tenth argument for idle shutdown in milliseconds.
 
 ## Running Experiments
 
-The experiment scripts expect the sender, receiver, and channel-emulator executables to exist at the paths specified in the script.
+The experiment scripts expect the sender, receiver, and channel-emulator
+executables to exist at the paths specified in each script. Build the required
+programs first, review those paths, and run from the repository root.
 
 From the repository root:
 
 ```bash
-bash scripts/run_experiments.sh
+python scripts/run_experiments.py --input input-10mb.bin \
+  --sweep loss --repetitions 3
 ```
 
-For the additional duplication and delay experiment script, if it is present in the repository root:
+Generate plots from the experiment CSV:
 
 ```bash
-bash run_impairment_experiments.sh
-```
-
-**Important:** These scripts append to `results/channel_stats.csv` and `results/experiment_seeds.csv`. Review the script before running it again, because rerunning it adds more rows and changes aggregate counts.
-
-Generate the SVG plots after compiling the plotting utility:
-
-```bash
-./plot_results.exe
+python scripts/plot_results.py results/experiments.csv
 ```
 
 Generated plots are saved under `results/plots/`:
@@ -169,14 +255,35 @@ The loss plot shows the mean observed drop rate, the duplication plot shows mean
 
 ## Testing
 
-The project includes tests for the channel emulator and timing subsystem. Build and run the relevant test executables from the repository root. Do not claim that Stop-and-Wait, Go-Back-N, or Selective Repeat passes end-to-end reliability tests until such tests have been run.
+Build and run the focused tests from the repository root:
 
-## Current Limitations / Next Work
+```bash
+make test_packet test_timer test_timer_manager test_sha256 test_channel \
+  test_go_back_n test_selective_repeat
+./test_packet.exe
+./test_timer.exe
+./test_timer_manager.exe
+./test_sha256.exe
+./test_channel.exe
+./test_go_back_n.exe
+./test_selective_repeat.exe
+```
 
-- Complete and integrate Stop-and-Wait, Go-Back-N, and Selective Repeat ARQ.
-- Add end-to-end tests for loss recovery, retransmissions, duplicate packets, ordering, and file integrity.
-- Measure actual transfer completion time and end-to-end latency, separately from configured channel delay.
-- Document exact test commands and verified outcomes after each test run.
+The Go-Back-N test uses real loopback UDP sockets and covers in-order
+delivery, duplicate and out-of-order packets, cumulative ACK advancement,
+corruption, timeout retransmission, and retry-limit failure. The test sleeps
+for one retransmission timeout, so it takes approximately one second even on a
+fast machine. The protocol and file-transfer implementations are
+compile-integrated through the Makefile. Full end-to-end testing through an
+impaired network still depends on running the Windows UDP channel emulator and
+a configured sender/receiver harness.
+
+## Current Limitations
+
+- Channel-emulator tests validate packet-level loss, duplication, corruption, and delay; they do not by themselves prove file-transfer completion under every impairment combination.
+- Configured emulator delay and impairment rates are not measured end-to-end latency or observed application loss.
+- Experiment CSV files are cumulative when scripts append to existing results; report the selected configuration and trial count with aggregates.
+- The direct `file_transfer` command accepts experiment options for CLI compatibility but does not itself emulate impairments; use the channel emulator for those experiments.
 
 ## Contributors
 

@@ -26,7 +26,8 @@ int packet_validate(const Packet *packet)
         return 0;
     }
 
-    if (packet->payload_length > MAX_PAYLOAD_SIZE)
+    if (packet->payload_length > MAX_PAYLOAD_SIZE ||
+        packet->type < PACKET_DATA || packet->type > PACKET_END)
     {
         return 0;
     }
@@ -46,7 +47,8 @@ int serialize_packet(const Packet *packet, uint8_t *buffer)
         return -1;
     }
 
-    if (packet->payload_length > MAX_PAYLOAD_SIZE)
+    if (packet->payload_length > MAX_PAYLOAD_SIZE ||
+        packet->type < PACKET_DATA || packet->type > PACKET_END)
     {
         return -1;
     }
@@ -77,14 +79,23 @@ for (uint16_t i = 0; i < packet->payload_length; i++)
 
 return 15 + packet->payload_length;
 }
-int deserialize_packet(Packet *packet, const uint8_t *buffer)
+int deserialize_packet(
+    Packet *packet,
+    const uint8_t *buffer,
+    size_t buffer_length
+)
 {
-    if (packet == NULL || buffer == NULL)
+    if (packet == NULL || buffer == NULL || buffer_length < 15)
     {
         return -1;
     }
 
     packet->type = (PacketType)buffer[0];
+
+    if (packet->type < PACKET_DATA || packet->type > PACKET_END)
+    {
+        return -1;
+    }
 
     packet->sequence_number =
         ((uint32_t)buffer[1] << 24) |
@@ -103,6 +114,11 @@ int deserialize_packet(Packet *packet, const uint8_t *buffer)
         (uint16_t)buffer[10];
 
     if (packet->payload_length > MAX_PAYLOAD_SIZE)
+    {
+        return -1;
+    }
+
+    if (buffer_length != 15U + packet->payload_length)
     {
         return -1;
     }

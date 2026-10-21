@@ -2,6 +2,7 @@
 #define PACKET_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 #define MAX_PAYLOAD_SIZE 1024
 
@@ -25,6 +26,10 @@ uint32_t calculate_checksum(const Packet *packet);
 
 int packet_validate(const Packet *packet);
 int serialize_packet(const Packet *packet, uint8_t *buffer);
-int deserialize_packet(Packet *packet, const uint8_t *buffer);
+int deserialize_packet(
+    Packet *packet,
+    const uint8_t *buffer,
+    size_t buffer_length
+);
 
 #endif

@@ -1,0 +1,9 @@
+Sender-facing endpoint: 127.0.0.1:9001
+Receiver-facing endpoint: 127.0.0.1:9000
+Settings: loss=0.10 duplicate=0.00 corrupt=0.00 reorder=0.00 delay=0 ms jitter=0 ms seed=42 idle_timeout=15000 ms
+READY
+Packets seen: 2429
+Packets dropped: 253
+Packets duplicated: 0
+Packets corrupted: 0
+Packets reordered: 0

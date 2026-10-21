@@ -201,7 +201,7 @@ int stop_wait_send(
             }
 
             Packet ack;
-            if (deserialize_packet(&ack, buffer) != 0)
+            if (deserialize_packet(&ack, buffer, (size_t)received) != 0)
             {
                 state->corrupted_packets++;
                 continue;
@@ -350,7 +350,8 @@ int stop_wait_receive(
 
     if (deserialize_packet(
             received_packet,
-            buffer) != 0)
+            buffer,
+            (size_t)received) != 0)
     {
         printf(
             "Packet deserialization failed\n"

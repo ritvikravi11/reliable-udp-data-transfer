@@ -31,9 +31,15 @@ int main()
 
     printf("Serialized size: %d\n", size);
 
-    if (deserialize_packet(&restored, buffer) != 0)
+    if (deserialize_packet(&restored, buffer, (size_t)size) != 0)
     {
         printf("Deserialization failed\n");
+        return 1;
+    }
+
+    if (deserialize_packet(&restored, buffer, 14U) == 0)
+    {
+        printf("Short-buffer validation failed\n");
         return 1;
     }
 

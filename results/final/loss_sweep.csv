@@ -1,0 +1,42 @@
+run_id,status,integrity,error,sweep,protocol,loss_rate,window_size,reorder_rate,seed,bytes,elapsed_seconds,goodput_bytes_per_sec,retransmissions,source_sha256,received_sha256
+loss-stop_wait-loss0.00-window4-reorder0.00-rep0,passed,passed,,loss,stop_wait,0.0,4,0.0,12345,10485760,2.406000,4358171.239,0,34754e7e776d9c8e98cfe7193ef5f9a7d7b5b348a5470594fc7bb30afda26b83,unknown
+loss-stop_wait-loss0.00-window4-reorder0.00-rep1,passed,passed,,loss,stop_wait,0.0,4,0.0,12346,10485760,2.219000,4725443.894,0,34754e7e776d9c8e98cfe7193ef5f9a7d7b5b348a5470594fc7bb30afda26b83,unknown
+loss-stop_wait-loss0.00-window4-reorder0.00-rep2,passed,passed,,loss,stop_wait,0.0,4,0.0,12347,10485760,2.359000,4445002.120,0,34754e7e776d9c8e98cfe7193ef5f9a7d7b5b348a5470594fc7bb30afda26b83,unknown
+loss-stop_wait-loss0.05-window4-reorder0.00-rep0,passed,passed,,loss,stop_wait,0.05,4,0.0,12345,10485760,129.672000,80863.718,1062,34754e7e776d9c8e98cfe7193ef5f9a7d7b5b348a5470594fc7bb30afda26b83,unknown
+loss-stop_wait-loss0.05-window4-reorder0.00-rep1,passed,passed,,loss,stop_wait,0.05,4,0.0,12346,10485760,137.422000,76303.358,1111,34754e7e776d9c8e98cfe7193ef5f9a7d7b5b348a5470594fc7bb30afda26b83,unknown
+loss-stop_wait-loss0.05-window4-reorder0.00-rep2,passed,passed,,loss,stop_wait,0.05,4,0.0,12347,10485760,131.047000,80015.262,1102,34754e7e776d9c8e98cfe7193ef5f9a7d7b5b348a5470594fc7bb30afda26b83,unknown
+loss-stop_wait-loss0.10-window4-reorder0.00-rep0,failed,not_verified,sender timeout,loss,stop_wait,0.1,4,0.0,12345,,,,,,
+loss-stop_wait-loss0.10-window4-reorder0.00-rep1,failed,not_verified,sender timeout,loss,stop_wait,0.1,4,0.0,12346,,,,,,
+loss-stop_wait-loss0.10-window4-reorder0.00-rep2,failed,not_verified,sender timeout,loss,stop_wait,0.1,4,0.0,12347,,,,,,
+loss-stop_wait-loss0.15-window4-reorder0.00-rep0,failed,not_verified,sender exit 1,loss,stop_wait,0.15,4,0.0,12345,10485760,106.641000,98327.660,41,34754e7e776d9c8e98cfe7193ef5f9a7d7b5b348a5470594fc7bb30afda26b83,unknown
+loss-stop_wait-loss0.15-window4-reorder0.00-rep1,failed,not_verified,sender timeout,loss,stop_wait,0.15,4,0.0,12346,,,,,,
+loss-stop_wait-loss0.15-window4-reorder0.00-rep2,failed,not_verified,sender timeout,loss,stop_wait,0.15,4,0.0,12347,,,,,,
+loss-stop_wait-loss0.20-window4-reorder0.00-rep0,failed,not_verified,sender exit 1,loss,stop_wait,0.2,4,0.0,12345,10485760,110.609000,94800.242,58,34754e7e776d9c8e98cfe7193ef5f9a7d7b5b348a5470594fc7bb30afda26b83,unknown
+loss-stop_wait-loss0.20-window4-reorder0.00-rep1,failed,not_verified,sender timeout,loss,stop_wait,0.2,4,0.0,12346,,,,,,
+loss-stop_wait-loss0.20-window4-reorder0.00-rep2,failed,not_verified,sender timeout,loss,stop_wait,0.2,4,0.0,12347,,,,,,
+loss-stop_wait-loss0.25-window4-reorder0.00-rep0,failed,not_verified,sender exit 1,loss,stop_wait,0.25,4,0.0,12345,10485760,159.718000,65651.711,225,34754e7e776d9c8e98cfe7193ef5f9a7d7b5b348a5470594fc7bb30afda26b83,unknown
+loss-stop_wait-loss0.25-window4-reorder0.00-rep1,failed,not_verified,sender timeout,loss,stop_wait,0.25,4,0.0,12346,,,,,,
+loss-stop_wait-loss0.25-window4-reorder0.00-rep2,failed,not_verified,sender exit 1,loss,stop_wait,0.25,4,0.0,12347,10485760,124.828000,84001.666,94,34754e7e776d9c8e98cfe7193ef5f9a7d7b5b348a5470594fc7bb30afda26b83,unknown
+loss-stop_wait-loss0.30-window4-reorder0.00-rep0,failed,not_verified,sender exit 1,loss,stop_wait,0.3,4,0.0,12345,,,,,,
+loss-stop_wait-loss0.30-window4-reorder0.00-rep1,failed,not_verified,sender exit 4294967295,loss,stop_wait,0.3,4,0.0,12346,,,,,,
+loss-stop_wait-loss0.30-window4-reorder0.00-rep2,failed,not_verified,sender exit 1,loss,stop_wait,0.3,4,0.0,12347,10485760,139.109000,75378.013,118,34754e7e776d9c8e98cfe7193ef5f9a7d7b5b348a5470594fc7bb30afda26b83,unknown
+loss-go_back_n-loss0.00-window4-reorder0.00-rep0,passed,passed,,loss,go_back_n,0.0,4,0.0,12345,10485760,1.203000,8716342.477,0,34754e7e776d9c8e98cfe7193ef5f9a7d7b5b348a5470594fc7bb30afda26b83,unknown
+loss-go_back_n-loss0.00-window4-reorder0.00-rep1,passed,passed,,loss,go_back_n,0.0,4,0.0,12346,10485760,1.141000,9189973.707,0,34754e7e776d9c8e98cfe7193ef5f9a7d7b5b348a5470594fc7bb30afda26b83,unknown
+loss-go_back_n-loss0.00-window4-reorder0.00-rep2,passed,passed,,loss,go_back_n,0.0,4,0.0,12347,10485760,1.203000,8716342.477,0,34754e7e776d9c8e98cfe7193ef5f9a7d7b5b348a5470594fc7bb30afda26b83,unknown
+loss-go_back_n-loss0.05-window4-reorder0.00-rep0,failed,not_verified,sender timeout,loss,go_back_n,0.05,4,0.0,12345,,,,,,
+loss-go_back_n-loss0.05-window4-reorder0.00-rep1,failed,not_verified,sender timeout,loss,go_back_n,0.05,4,0.0,12346,,,,,,
+loss-go_back_n-loss0.05-window4-reorder0.00-rep2,failed,not_verified,sender timeout,loss,go_back_n,0.05,4,0.0,12347,,,,,,
+loss-go_back_n-loss0.10-window4-reorder0.00-rep0,failed,not_verified,sender timeout,loss,go_back_n,0.1,4,0.0,12345,,,,,,
+loss-go_back_n-loss0.10-window4-reorder0.00-rep1,failed,not_verified,sender timeout,loss,go_back_n,0.1,4,0.0,12346,,,,,,
+loss-go_back_n-loss0.10-window4-reorder0.00-rep2,failed,not_verified,sender timeout,loss,go_back_n,0.1,4,0.0,12347,,,,,,
+loss-go_back_n-loss0.15-window4-reorder0.00-rep0,failed,not_verified,sender timeout,loss,go_back_n,0.15,4,0.0,12345,,,,,,
+loss-go_back_n-loss0.15-window4-reorder0.00-rep1,failed,not_verified,sender timeout,loss,go_back_n,0.15,4,0.0,12346,,,,,,
+loss-go_back_n-loss0.15-window4-reorder0.00-rep2,failed,not_verified,sender timeout,loss,go_back_n,0.15,4,0.0,12347,,,,,,
+loss-go_back_n-loss0.20-window4-reorder0.00-rep0,failed,not_verified,sender timeout,loss,go_back_n,0.2,4,0.0,12345,,,,,,
+loss-go_back_n-loss0.20-window4-reorder0.00-rep1,failed,not_verified,sender timeout,loss,go_back_n,0.2,4,0.0,12346,,,,,,
+loss-go_back_n-loss0.20-window4-reorder0.00-rep2,failed,not_verified,sender timeout,loss,go_back_n,0.2,4,0.0,12347,,,,,,
+loss-go_back_n-loss0.25-window4-reorder0.00-rep0,failed,not_verified,sender timeout,loss,go_back_n,0.25,4,0.0,12345,,,,,,
+loss-go_back_n-loss0.25-window4-reorder0.00-rep1,failed,not_verified,sender timeout,loss,go_back_n,0.25,4,0.0,12346,,,,,,
+loss-go_back_n-loss0.25-window4-reorder0.00-rep2,failed,not_verified,sender timeout,loss,go_back_n,0.25,4,0.0,12347,,,,,,
+loss-go_back_n-loss0.30-window4-reorder0.00-rep0,failed,not_verified,sender timeout,loss,go_back_n,0.3,4,0.0,12345,,,,,,
+loss-go_back_n-loss0.30-window4-reorder0.00-rep1,failed,not_verified,sender exit 1,loss,go_back_n,0.3,4,0.0,12346,10485760,137.109000,76477.547,323,34754e7e776d9c8e98cfe7193ef5f9a7d7b5b348a5470594fc7bb30afda26b83,unknown

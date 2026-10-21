@@ -1,0 +1,1 @@
+METRIC protocol=go_back_n bytes=1048576 elapsed_seconds=156.531000 goodput_bytes_per_sec=6698.839 retransmissions=333 source_sha256=bc10091004d85ec8c4fa5a5a0d976b0cc329b68750b45b16c9e90f382055b271 received_sha256=unknown loss_rate=unknown window_size=4 reorder_rate=unknown seed=unknown
