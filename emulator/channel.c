@@ -106,10 +106,6 @@ int channel_process(
         }
     }
 
-    /*
-     * The persistent UDP emulator uses this extra delay with its scheduled
-     * forwarding queue to create actual out-of-order delivery.
-     */
     if (random_unit() < config->reorder_rate) {
         if (*delay_ms <= UINT_MAX - 100U) {
             *delay_ms += 100U;
