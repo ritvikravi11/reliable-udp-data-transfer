@@ -29,7 +29,7 @@ int main()
 
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-    server_addr.sin_port = htons(9000);
+    server_addr.sin_port = htons(9001);
 
     packet.type = PACKET_DATA;
     packet.sequence_number = 1;
