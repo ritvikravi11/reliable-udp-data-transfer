@@ -25,6 +25,13 @@ typedef struct
     int retransmissions;
     int corrupted_packets;
     int duplicate_packets;
+    int original_transmissions;
+    int timeout_count;
+    int ack_count;
+    int duplicate_ack_count;
+    int accepted_rtt_samples;
+    int rejected_rtt_samples;
+    double initial_rto;
 
 } StopWaitState;
 

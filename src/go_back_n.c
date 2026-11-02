@@ -4,6 +4,7 @@
 #include <string.h>
 
 #define GBN_ACK_NONE UINT32_MAX
+#define GBN_DEFAULT_INITIAL_RTO GBN_DEFAULT_RTO
 
 static int send_packet(
     GoBackNState *state,
@@ -85,10 +86,52 @@ static void stop_base_timer(GoBackNState *state)
     state->retry_count = 0;
 }
 
+static double clamp_rto(double rto)
+{
+    if (rto < GBN_MIN_RTO) return GBN_MIN_RTO;
+    if (rto > GBN_MAX_RTO) return GBN_MAX_RTO;
+    return rto;
+}
+
 static void start_base_timer(GoBackNState *state)
 {
     timer_start(&state->timer, state->base);
     state->timer_active = 1;
+}
+
+static int retransmit_window(GoBackNState *state)
+{
+    uint32_t sequence;
+
+    if (state->retry_count >= GBN_MAX_RETRIES) {
+        return -1;
+    }
+    for (sequence = state->base;
+         sequence != state->next_sequence_number;
+         ++sequence) {
+        unsigned int slot = sequence % GBN_MAX_WINDOW_SIZE;
+        if (!send_packet(
+                state,
+                &state->window[slot])) {
+            return -1;
+        }
+        state->packets_sent++;
+        state->retransmissions++;
+        state->slot_retransmitted[slot] = 1;
+    }
+    state->retry_count++;
+    state->duplicate_ack_count = 0;
+    state->fast_retransmit_done = 1;
+    timer_mark_retransmitted(&state->timer);
+    return 1;
+}
+
+static void update_rto(GoBackNState *state, double sample)
+{
+    rtt_update(&state->rtt, sample, 0);
+    state->rto = rtt_get_rto(&state->rtt);
+    state->rto = clamp_rto(state->rto);
+    state->accepted_rtt_samples++;
 }
 
 void gbn_init(
@@ -103,9 +146,25 @@ void gbn_init(
     memset(state, 0, sizeof(*state));
     state->socket = socket;
     state->window_size = GBN_WINDOW_SIZE;
+    rtt_init(&state->rtt);
+    state->rto = GBN_DEFAULT_RTO;
+    state->initial_rto = GBN_DEFAULT_INITIAL_RTO;
     if (peer_address != NULL) {
         state->peer_address = *peer_address;
     }
+}
+
+int gbn_set_initial_rto(GoBackNState *state, double initial_rto)
+{
+    if (state == NULL || initial_rto <= 0.0 ||
+        initial_rto < GBN_MIN_RTO || initial_rto > GBN_MAX_RTO ||
+        state->base != state->next_sequence_number) {
+        return 0;
+    }
+    rtt_init_with_rto(&state->rtt, initial_rto);
+    state->initial_rto = initial_rto;
+    state->rto = initial_rto;
+    return 1;
 }
 
 int gbn_set_window_size(GoBackNState *state, uint32_t window_size)
@@ -156,9 +215,15 @@ int gbn_send(GoBackNState *state, const uint8_t *data, uint16_t length)
     }
     state->next_sequence_number++;
     state->packets_sent++;
+    state->original_transmissions++;
+    state->transmission_time[sequence % GBN_MAX_WINDOW_SIZE] =
+        timer_elapsed(&state->timer);
+    state->slot_retransmitted[sequence % GBN_MAX_WINDOW_SIZE] = 0;
     if (!state->timer_active) {
         state->retry_count = 0;
         start_base_timer(state);
+        state->transmission_time[sequence % GBN_MAX_WINDOW_SIZE] =
+            timer_elapsed(&state->timer);
     }
     return 1;
 }
@@ -197,17 +262,34 @@ int gbn_receive(GoBackNState *state, Packet *packet)
     }
 
     state->packets_received++;
+    state->ack_count++;
     acknowledgement = packet->acknowledgement_number;
     if (acknowledgement == GBN_ACK_NONE ||
         state->base == state->next_sequence_number ||
-        acknowledgement < state->base ||
-        acknowledgement >= state->next_sequence_number) {
+        !sequence_in_window(state->base, acknowledgement,
+                            sequence_distance(state->base,
+                                              state->next_sequence_number))) {
         state->duplicate_packets++;
+        state->duplicate_ack_count++;
+        state->duplicate_ack_count_total++;
         return 0;
     }
 
-    state->base = acknowledgement + 1U;
+    {
+        unsigned int slot = state->base % GBN_MAX_WINDOW_SIZE;
+        if (state->slot_retransmitted[slot]) {
+            state->rejected_rtt_samples++;
+        } else {
+            update_rto(state, timer_elapsed(&state->timer));
+        }
+    }
+    do {
+        state->slot_retransmitted[state->base % GBN_MAX_WINDOW_SIZE] = 0;
+        state->base++;
+    } while (state->base != acknowledgement + 1U);
     state->retry_count = 0;
+    state->duplicate_ack_count = 0;
+    state->fast_retransmit_done = 0;
     if (state->base == state->next_sequence_number) {
         stop_base_timer(state);
     } else {
@@ -218,29 +300,13 @@ int gbn_receive(GoBackNState *state, Packet *packet)
 
 int gbn_retransmit_expired(GoBackNState *state)
 {
-    uint32_t sequence;
-
     if (state == NULL || !state->timer_active ||
-        !timer_expired(&state->timer, GBN_DEFAULT_RTO)) {
+        !timer_expired(&state->timer, state->rto)) {
         return 0;
     }
-    if (state->retry_count >= GBN_MAX_RETRIES) {
-        return -1;
-    }
-    for (sequence = state->base;
-         sequence < state->next_sequence_number;
-         ++sequence) {
-        if (!send_packet(
-                state,
-                &state->window[sequence % GBN_MAX_WINDOW_SIZE])) {
-            return -1;
-        }
-        state->packets_sent++;
-        state->retransmissions++;
-    }
-    state->retry_count++;
-    timer_mark_retransmitted(&state->timer);
-    return 1;
+    state->timeout_count++;
+    state->rto = clamp_rto(state->rto * 2.0);
+    return retransmit_window(state);
 }
 
 int gbn_flush(GoBackNState *state)
@@ -251,7 +317,7 @@ int gbn_flush(GoBackNState *state)
     while (state->base != state->next_sequence_number) {
         fd_set read_set;
         struct timeval timeout;
-        double remaining = GBN_DEFAULT_RTO - timer_elapsed(&state->timer);
+        double remaining = state->rto - timer_elapsed(&state->timer);
         int result;
 
         if (remaining < 0.0) {
@@ -315,7 +381,8 @@ int gbn_receiver_process(
         state->expected_sequence_number++;
         acknowledgement = packet->sequence_number;
         delivered = 1;
-    } else if (packet->sequence_number < state->expected_sequence_number) {
+    } else if (sequence_before(packet->sequence_number,
+                               state->expected_sequence_number)) {
         state->duplicate_packets++;
         acknowledgement = state->expected_sequence_number == 0
             ? GBN_ACK_NONE : state->expected_sequence_number - 1U;

@@ -25,6 +25,8 @@ typedef struct
 
 void rtt_init(RttEstimator *estimator);
 
+void rtt_init_with_rto(RttEstimator *estimator, double initial_rto);
+
 void rtt_update(
     RttEstimator *estimator,
     double measured_rtt,

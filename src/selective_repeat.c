@@ -6,156 +6,374 @@ static int send_packet(SOCKET socket, const struct sockaddr_in *address,
                        const Packet *packet)
 {
     uint8_t buffer[SR_BUFFER_SIZE];
-    int n = serialize_packet(packet, buffer);
-    if (n <= 0) return 0;
-    return sendto(socket, (const char *)buffer, n, 0,
-                  (const struct sockaddr *)address, sizeof(*address)) == n;
+    int length;
+
+    if (packet == NULL || address == NULL) {
+        return 0;
+    }
+    length = serialize_packet(packet, buffer);
+    if (length <= 0) {
+        return 0;
+    }
+    return sendto(socket, (const char *)buffer, length, 0,
+                  (const struct sockaddr *)address, sizeof(*address)) == length;
 }
 
-static int decode(const uint8_t *buffer, int length, Packet *packet)
+static int decode_packet(const uint8_t *buffer, int length, Packet *packet)
 {
-    return length >= 15 && deserialize_packet(packet, buffer, (size_t)length) == 0 &&
+    return buffer != NULL && packet != NULL && length >= 15 &&
+           deserialize_packet(packet, buffer, (size_t)length) == 0 &&
            packet_validate(packet);
 }
 
-void sr_init(SelectiveRepeatState *s, SOCKET socket,
-             const struct sockaddr_in *address)
+static unsigned int slot_for(uint32_t sequence, uint32_t window_size)
 {
-    if (!s) return;
-    memset(s, 0, sizeof(*s));
-    s->socket = socket;
-    if (address) s->peer_address = *address;
+    return (unsigned int)(sequence % window_size);
 }
 
-int sr_send_ack(SelectiveRepeatState *s, uint32_t number)
+static void update_rto(SelectiveRepeatState *state, RetransmissionTimer *timer)
 {
-    if (!s) return 0;
-    Packet ack; memset(&ack, 0, sizeof(ack));
+    if (!timer->retransmitted) {
+        rtt_update(&state->rtt, timer_elapsed(timer), 0);
+        state->rto = rtt_get_rto(&state->rtt);
+        if (state->rto < SR_MIN_RTO) {
+            state->rto = SR_MIN_RTO;
+        } else if (state->rto > SR_MAX_RTO) {
+            state->rto = SR_MAX_RTO;
+        }
+        state->accepted_rtt_samples++;
+    } else {
+        state->rejected_rtt_samples++;
+    }
+}
+
+static double clamp_rto(double rto)
+{
+    if (rto < SR_MIN_RTO) return SR_MIN_RTO;
+    if (rto > SR_MAX_RTO) return SR_MAX_RTO;
+    return rto;
+}
+
+void sr_init(SelectiveRepeatState *state, SOCKET socket,
+             const struct sockaddr_in *address)
+{
+    if (state == NULL) {
+        return;
+    }
+    memset(state, 0, sizeof(*state));
+    state->socket = socket;
+    state->window_size = SR_WINDOW_SIZE;
+    rtt_init(&state->rtt);
+    state->rto = SR_RTO;
+    state->initial_rto = SR_RTO;
+    if (address != NULL) {
+        state->peer_address = *address;
+    }
+}
+
+int sr_set_initial_rto(SelectiveRepeatState *state, double initial_rto)
+{
+        if (state == NULL || initial_rto < SR_MIN_RTO ||
+            initial_rto > SR_MAX_RTO ||
+            state->base != state->next_sequence_number) {
+            return 0;
+        }
+        rtt_init_with_rto(&state->rtt, initial_rto);
+        state->initial_rto = initial_rto;
+        state->rto = initial_rto;
+        return 1;
+}
+
+int sr_set_window_size(SelectiveRepeatState *state, uint32_t window_size)
+{
+    if (state == NULL || window_size == 0 ||
+        window_size > SR_MAX_WINDOW_SIZE ||
+        (uint64_t)window_size > SEQUENCE_SPACE_SIZE / 2ULL ||
+        state->base != state->next_sequence_number) {
+        return 0;
+    }
+    state->window_size = window_size;
+    return 1;
+}
+
+int sr_send_ack(SelectiveRepeatState *state, uint32_t number)
+{
+    Packet ack;
+
+    if (state == NULL) {
+        return 0;
+    }
+    memset(&ack, 0, sizeof(ack));
     ack.type = PACKET_ACK;
     ack.sequence_number = number;
     ack.acknowledgement_number = number;
     ack.checksum = calculate_checksum(&ack);
-    return send_packet(s->socket, &s->peer_address, &ack);
+    return send_packet(state->socket, &state->peer_address, &ack);
 }
 
-int sr_send(SelectiveRepeatState *s, const uint8_t *data, uint16_t length)
+int sr_send(SelectiveRepeatState *state, const uint8_t *data,
+            uint16_t length)
 {
-    if (!s || !data || length > MAX_PAYLOAD_SIZE ||
-        s->next_sequence_number - s->base >= SR_WINDOW_SIZE) return 0;
-    uint32_t sequence = s->next_sequence_number;
-    unsigned int slot = sequence % SR_WINDOW_SIZE;
-    Packet *p = &s->window[slot];
-    memset(p, 0, sizeof(*p));
-    p->type = PACKET_DATA; p->sequence_number = sequence;
-    p->payload_length = length; memcpy(p->payload, data, length);
-    p->checksum = calculate_checksum(p);
-    if (!send_packet(s->socket, &s->peer_address, p)) return 0;
-    s->next_sequence_number++;
-    s->active[slot] = 1; s->acknowledged[slot] = 0; s->retries[slot] = 0;
-    timer_start(&s->timers[slot], sequence);
-    s->packets_sent++;
+    uint32_t sequence;
+    unsigned int slot;
+    Packet *packet;
+
+    if (state == NULL || data == NULL || length > MAX_PAYLOAD_SIZE ||
+        state->window_size == 0 ||
+        state->next_sequence_number - state->base >= state->window_size) {
+        return 0;
+    }
+
+    sequence = state->next_sequence_number;
+    slot = slot_for(sequence, state->window_size);
+    if (state->active[slot] ||
+        (state->window[slot].sequence_number != sequence &&
+         state->timers[slot].active)) {
+        return 0;
+    }
+
+    packet = &state->window[slot];
+    memset(packet, 0, sizeof(*packet));
+    packet->type = PACKET_DATA;
+    packet->sequence_number = sequence;
+    packet->payload_length = length;
+    memcpy(packet->payload, data, length);
+    packet->checksum = calculate_checksum(packet);
+
+    if (!send_packet(state->socket, &state->peer_address, packet)) {
+        return 0;
+    }
+
+    state->next_sequence_number++;
+    state->active[slot] = 1;
+    state->acknowledged[slot] = 0;
+    state->retries[slot] = 0;
+    timer_start(&state->timers[slot], sequence);
+    state->packets_sent++;
+    state->original_transmissions++;
     return 1;
 }
 
-int sr_receive(SelectiveRepeatState *s, Packet *packet)
+int sr_receive(SelectiveRepeatState *state, Packet *packet)
 {
-    if (!s) return -1;
     Packet local_packet;
-    if (!packet) packet = &local_packet;
     uint8_t buffer[SR_BUFFER_SIZE];
-    int n = recvfrom(s->socket, (char *)buffer, sizeof(buffer), 0, NULL, NULL);
-    if (n == SOCKET_ERROR) return -1;
-    if (!decode(buffer, n, packet)) { s->corrupted_packets++; return 0; }
-    s->packets_received++;
-    if (packet->type != PACKET_ACK) return 0;
-    uint32_t number = packet->acknowledgement_number;
-    if (number < s->base || number >= s->next_sequence_number) {
-        s->duplicate_packets++; return 0;
+    int length;
+    uint32_t number;
+    unsigned int slot;
+
+    if (state == NULL) {
+        return -1;
     }
-    unsigned int slot = number % SR_WINDOW_SIZE;
-    if (!s->active[slot] || s->window[slot].sequence_number != number) return 0;
-    s->acknowledged[slot] = 1; s->active[slot] = 0;
-    timer_stop(&s->timers[slot]);
-    while (s->base < s->next_sequence_number &&
-           !s->active[s->base % SR_WINDOW_SIZE]) s->base++;
+    if (packet == NULL) {
+        packet = &local_packet;
+    }
+    length = recvfrom(state->socket, (char *)buffer, sizeof(buffer),
+                      0, NULL, NULL);
+    if (length == SOCKET_ERROR) {
+        return -1;
+    }
+    if (!decode_packet(buffer, length, packet)) {
+        state->corrupted_packets++;
+        return 0;
+    }
+    if (packet->type != PACKET_ACK) {
+        return 0;
+    }
+
+    state->packets_received++;
+    state->ack_count++;
+    number = packet->acknowledgement_number;
+    if (state->base == state->next_sequence_number ||
+        !sequence_in_window(state->base, number,
+                            sequence_distance(state->base,
+                                              state->next_sequence_number))) {
+        state->duplicate_packets++;
+        state->duplicate_ack_count_total++;
+        return 0;
+    }
+
+    slot = slot_for(number, state->window_size);
+    if (!state->active[slot] ||
+        state->window[slot].sequence_number != number) {
+        state->duplicate_packets++;
+        state->duplicate_ack_count_total++;
+        return 0;
+    }
+
+    update_rto(state, &state->timers[slot]);
+    state->acknowledged[slot] = 1;
+    state->active[slot] = 0;
+    timer_stop(&state->timers[slot]);
+    while (state->base < state->next_sequence_number &&
+           !state->active[slot_for(state->base, state->window_size)]) {
+        state->base++;
+    }
     return 1;
 }
 
-int sr_retransmit_expired(SelectiveRepeatState *s)
+int sr_retransmit_expired(SelectiveRepeatState *state)
 {
-    if (!s) return -1;
-    int count = 0;
-    for (uint32_t n = s->base; n < s->next_sequence_number; ++n) {
-        unsigned int slot = n % SR_WINDOW_SIZE;
-        if (!s->active[slot] || !timer_expired(&s->timers[slot], SR_RTO)) continue;
-        if (s->retries[slot]++ >= SR_MAX_RETRIES) return -1;
-        if (!send_packet(s->socket, &s->peer_address, &s->window[slot])) return -1;
-        timer_mark_retransmitted(&s->timers[slot]);
-        s->packets_sent++; s->retransmissions++; count++;
+    uint32_t sequence;
+    int retransmitted = 0;
+
+    if (state == NULL) {
+        return -1;
     }
-    return count;
+    for (sequence = state->base;
+         sequence != state->next_sequence_number;
+         ++sequence) {
+        unsigned int slot = slot_for(sequence, state->window_size);
+        if (!state->active[slot] ||
+            !timer_expired(&state->timers[slot], state->rto)) {
+            continue;
+        }
+        if (state->retries[slot] >= SR_MAX_RETRIES) {
+            return -1;
+        }
+        if (!send_packet(state->socket, &state->peer_address,
+                         &state->window[slot])) {
+            return -1;
+        }
+        state->retries[slot]++;
+        state->packets_sent++;
+        state->retransmissions++;
+        state->timeout_count++;
+        state->rto = clamp_rto(state->rto * 2.0);
+        timer_mark_retransmitted(&state->timers[slot]);
+        retransmitted++;
+    }
+    return retransmitted;
 }
 
-int sr_flush(SelectiveRepeatState *s)
+int sr_flush(SelectiveRepeatState *state)
 {
-    if (!s) return 0;
-    while (s->base != s->next_sequence_number) {
-        double left = SR_RTO;
-        for (uint32_t n = s->base; n < s->next_sequence_number; ++n) {
-            unsigned int slot = n % SR_WINDOW_SIZE;
-            if (s->active[slot]) {
-                double remaining = SR_RTO - timer_elapsed(&s->timers[slot]);
-                if (remaining < left) left = remaining;
+    if (state == NULL) {
+        return 0;
+    }
+    while (state->base != state->next_sequence_number) {
+        double remaining = state->rto;
+        uint32_t sequence;
+        fd_set read_set;
+        struct timeval timeout;
+        int result;
+
+        for (sequence = state->base;
+             sequence != state->next_sequence_number;
+             ++sequence) {
+            unsigned int slot = slot_for(sequence, state->window_size);
+            if (state->active[slot]) {
+                double candidate =
+                    state->rto - timer_elapsed(&state->timers[slot]);
+                if (candidate < remaining) {
+                    remaining = candidate;
+                }
             }
         }
-        if (left < 0.0) left = 0.0;
-        fd_set set; FD_ZERO(&set); FD_SET(s->socket, &set);
-        struct timeval tv = {(long)left, (long)((left - (long)left) * 1000000.0)};
-        int r = select(0, &set, NULL, NULL, &tv);
-        if (r == SOCKET_ERROR) return 0;
-        if (r == 0) { if (sr_retransmit_expired(s) < 0) return 0; }
-        else if (sr_receive(s, NULL) < 0) return 0;
+        if (remaining < 0.0) {
+            remaining = 0.0;
+        }
+        FD_ZERO(&read_set);
+        FD_SET(state->socket, &read_set);
+        timeout.tv_sec = (long)remaining;
+        timeout.tv_usec =
+            (long)((remaining - timeout.tv_sec) * 1000000.0);
+        result = select(0, &read_set, NULL, NULL, &timeout);
+        if (result == SOCKET_ERROR) {
+            return 0;
+        }
+        if (result == 0) {
+            if (sr_retransmit_expired(state) < 0) {
+                return 0;
+            }
+        } else if (sr_receive(state, NULL) < 0) {
+            return 0;
+        }
     }
     return 1;
 }
 
-void sr_receiver_init(SelectiveRepeatReceiverState *s, SOCKET socket,
+void sr_receiver_init(SelectiveRepeatReceiverState *state, SOCKET socket,
                       const struct sockaddr_in *address)
 {
-    if (!s) return;
-    memset(s, 0, sizeof(*s)); s->socket = socket;
-    if (address) s->peer_address = *address;
+    if (state == NULL) {
+        return;
+    }
+    memset(state, 0, sizeof(*state));
+    state->socket = socket;
+    state->window_size = SR_WINDOW_SIZE;
+    if (address != NULL) {
+        state->peer_address = *address;
+    }
 }
 
-static int receiver_ack(SelectiveRepeatReceiverState *s, uint32_t number)
+int sr_receiver_set_window_size(SelectiveRepeatReceiverState *state,
+                                uint32_t window_size)
 {
-    Packet ack; memset(&ack, 0, sizeof(ack));
-    ack.type = PACKET_ACK; ack.sequence_number = number;
-    ack.acknowledgement_number = number; ack.checksum = calculate_checksum(&ack);
-    return send_packet(s->socket, &s->peer_address, &ack);
+    if (state == NULL || window_size == 0 ||
+        window_size > SR_MAX_WINDOW_SIZE ||
+        (uint64_t)window_size > SEQUENCE_SPACE_SIZE / 2ULL ||
+        state->base != 0 || state->packets_received != 0) {
+        return 0;
+    }
+    state->window_size = window_size;
+    return 1;
 }
 
-int sr_receiver_process(SelectiveRepeatReceiverState *s, const Packet *p)
+static int receiver_ack(SelectiveRepeatReceiverState *state,
+                        uint32_t number)
 {
-    if (!s || !p) return -1;
-    if (p->type != PACKET_DATA || !packet_validate(p)) {
-        s->corrupted_packets++; return -1;
+    Packet ack;
+
+    memset(&ack, 0, sizeof(ack));
+    ack.type = PACKET_ACK;
+    ack.sequence_number = number;
+    ack.acknowledgement_number = number;
+    ack.checksum = calculate_checksum(&ack);
+    return send_packet(state->socket, &state->peer_address, &ack);
+}
+
+int sr_receiver_process(SelectiveRepeatReceiverState *state,
+                        const Packet *packet)
+{
+    unsigned int slot;
+
+    if (state == NULL || packet == NULL) {
+        return -1;
     }
-    s->packets_received++;
-    if (p->sequence_number < s->base) {
-        s->duplicate_packets++; return receiver_ack(s, p->sequence_number) ? 0 : -1;
+    if (packet->type != PACKET_DATA || !packet_validate(packet)) {
+        state->corrupted_packets++;
+        return -1;
     }
-    if (p->sequence_number >= s->base + SR_WINDOW_SIZE) {
-        s->out_of_window_packets++;
-        return receiver_ack(s, s->base == 0 ? UINT32_MAX : s->base - 1) ? 0 : -1;
+
+    state->packets_received++;
+    if (packet->sequence_number < state->base) {
+        state->duplicate_packets++;
+        return receiver_ack(state, packet->sequence_number) ? 0 : -1;
     }
-    unsigned int slot = p->sequence_number % SR_WINDOW_SIZE;
-    if (!s->present[slot]) { s->window[slot] = *p; s->present[slot] = 1; }
-    else s->duplicate_packets++;
-    if (!receiver_ack(s, p->sequence_number)) return -1;
-    while (s->present[s->base % SR_WINDOW_SIZE]) {
-        s->present[s->base % SR_WINDOW_SIZE] = 0;
-        s->packets_delivered++; s->base++;
+    if (packet->sequence_number - state->base >= state->window_size) {
+        state->out_of_window_packets++;
+        return receiver_ack(
+            state,
+            state->base == 0 ? UINT32_MAX : state->base - 1U
+        ) ? 0 : -1;
+    }
+
+    slot = slot_for(packet->sequence_number, state->window_size);
+    if (state->present[slot]) {
+        state->duplicate_packets++;
+    } else {
+        state->window[slot] = *packet;
+        state->present[slot] = 1;
+    }
+    if (!receiver_ack(state, packet->sequence_number)) {
+        return -1;
+    }
+
+    while (state->present[slot_for(state->base, state->window_size)]) {
+        state->present[slot_for(state->base, state->window_size)] = 0;
+        state->packets_delivered++;
+        state->base++;
     }
     return 0;
 }

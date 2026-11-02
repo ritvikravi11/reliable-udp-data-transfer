@@ -27,7 +27,7 @@ The assignment scope includes these implemented protocols:
 - Go-Back-N ARQ
 - Selective Repeat ARQ
 
-**Implementation status:** Stop-and-Wait, Go-Back-N, and Selective Repeat protocol state machines are implemented in `src/`. The `file_transfer` application provides a file-oriented Windows UDP workflow. Go-Back-N uses cumulative ACKs and whole-window retransmission; Selective Repeat uses individual ACKs, buffering, and per-packet timers.
+**Implementation status:** Stop-and-Wait, Go-Back-N, and Selective Repeat protocol state machines are implemented in `src/` and integrated into the file-transfer workflow. Go-Back-N uses cumulative ACKs, one adaptive timer for the oldest outstanding packet, duplicate-ACK accounting, and whole-window timeout retransmission. Selective Repeat uses individual ACKs, configurable bounded windows, buffering, per-packet adaptive timers, and selective retransmission. RTT samples from retransmitted packets are excluded using Karn's algorithm.
 
 ### Go-Back-N acknowledgement convention
 
@@ -137,10 +137,30 @@ Build the applications and tests with the Makefile:
 make
 ```
 
+The `all` target also builds `emulator/udp_channel.exe` and
+`test_udp_sender.exe`. The emulator is therefore available for integration
+tests without a separate build command.
+
 To build only the file-transfer application:
 
 ```bash
 make file_transfer
+```
+
+Run the complete deterministic integration matrix after building:
+
+```bash
+make integration_test
+```
+
+The integration runner accepts `--window N` to exercise a larger configured
+GBN/SR window, for example:
+
+```bash
+python scripts/run_integration_tests.py \
+  --input test_data/source_1MiB.bin \
+  --protocol go_back_n --scenario reordering \
+  --window 16 --timeout 90
 ```
 
 The channel emulator can be built separately:
@@ -187,11 +207,18 @@ Each process emits a machine-readable line containing fields such as:
 
 ```text
 METRIC protocol=... bytes=... elapsed_seconds=... goodput_bytes_per_sec=...
+  original_transmissions=... packets_sent=... retransmissions=...
+  timeout_count=... ack_count=... duplicate_ack_count=...
+  rtt_samples_accepted=... rtt_samples_rejected=...
+  initial_rto=... final_rto=... retransmission_rate=...
 retransmissions=... source_sha256=... received_sha256=... loss_rate=...
 window_size=... reorder_rate=... seed=...
 ```
 
-For a successful transfer, `source_sha256` and `received_sha256` match. The optional `--window`, `--loss`, and `--seed` arguments are accepted for experiment compatibility; direct file transfer does not itself emulate impairments.
+For a successful transfer, `source_sha256` and `received_sha256` match. The
+file-transfer sender accepts `--window` and `--initial-rto`; packet loss,
+duplication, corruption, delay, jitter, and reordering are configured only in
+the independent UDP emulator.
 
 ## End-to-end integration tests
 

@@ -164,7 +164,8 @@ static int sender(
     const char *host,
     int port,
     Protocol protocol,
-    uint32_t window_size
+    uint32_t window_size,
+    double initial_rto
 )
 {
     FILE *file = fopen(input, "rb");
@@ -211,9 +212,14 @@ static int sender(
     if (protocol == PROTO_STOP_WAIT) stop_wait_init(&sw, sock, &peer);
     else if (protocol == PROTO_GBN) {
         gbn_init(&gbn, sock, &peer);
-        if (!gbn_set_window_size(&gbn, window_size)) goto done;
+        if (!gbn_set_window_size(&gbn, window_size) ||
+            !gbn_set_initial_rto(&gbn, initial_rto)) goto done;
     }
-    else sr_init(&sr, sock, &peer);
+    else {
+        sr_init(&sr, sock, &peer);
+        if (!sr_set_window_size(&sr, window_size) ||
+            !sr_set_initial_rto(&sr, initial_rto)) goto done;
+    }
 
     while ((count = fread(chunk, 1, sizeof(chunk), file)) > 0) {
         int sent = protocol == PROTO_STOP_WAIT ?
@@ -232,7 +238,7 @@ static int sender(
             gbn.next_sequence_number - gbn.base >= gbn.window_size &&
             !gbn_flush(&gbn)) goto done;
         if (protocol == PROTO_SR &&
-            sr.next_sequence_number - sr.base >= SR_WINDOW_SIZE &&
+            sr.next_sequence_number - sr.base >= sr.window_size &&
             !sr_flush(&sr)) goto done;
     }
     if (protocol == PROTO_GBN && !gbn_flush(&gbn)) goto done;
@@ -244,20 +250,58 @@ done:
         int retransmissions = protocol == PROTO_STOP_WAIT ? sw.retransmissions :
             (protocol == PROTO_GBN ? gbn.retransmissions : sr.retransmissions);
         double elapsed = now_seconds() - started;
-        printf("METRIC protocol=%s bytes=%llu elapsed_seconds=%.6f "
-               "goodput_bytes_per_sec=%.3f retransmissions=%d source_sha256=%s "
-               "received_sha256=unknown loss_rate=unknown window_size=%d "
-               "reorder_rate=unknown seed=unknown\n", protocol_name(protocol),
+        printf("METRIC protocol=%s status=%s bytes=%llu elapsed_seconds=%.6f "
+               "goodput_bytes_per_sec=%.3f packets_sent=%d "
+               "original_transmissions=%d retransmissions=%d "
+               "timeout_count=%d ack_count=%d "
+               "duplicate_ack_count=%d rtt_samples_accepted=%d "
+               "rtt_samples_rejected=%d initial_rto=%.3f final_rto=%.3f "
+               "fast_retransmissions=%d retransmission_rate=%.6f "
+               "source_sha256=%s window_size=%d\n",
+               protocol_name(protocol), result ? "success" : "failure",
                (unsigned long long)bytes, elapsed,
-               elapsed > 0 ? bytes / elapsed : 0.0, retransmissions, hex,
+               elapsed > 0 ? bytes / elapsed : 0.0,
+               protocol == PROTO_STOP_WAIT ? sw.packets_sent :
+               (protocol == PROTO_GBN ? gbn.packets_sent : sr.packets_sent),
+               protocol == PROTO_STOP_WAIT ?
+                   (sw.packets_sent - sw.retransmissions) :
+                   (protocol == PROTO_GBN ? gbn.original_transmissions :
+                                           sr.original_transmissions),
+               retransmissions,
+               protocol == PROTO_STOP_WAIT ? sw.timeout_count :
+               (protocol == PROTO_GBN ? gbn.timeout_count : sr.timeout_count),
+               protocol == PROTO_STOP_WAIT ? sw.ack_count :
+               (protocol == PROTO_GBN ? gbn.ack_count : sr.ack_count),
+               protocol == PROTO_STOP_WAIT ? sw.duplicate_ack_count :
+               (protocol == PROTO_GBN ? gbn.duplicate_ack_count_total :
+                                        sr.duplicate_ack_count_total),
+               protocol == PROTO_STOP_WAIT ? sw.accepted_rtt_samples :
+               (protocol == PROTO_GBN ? gbn.accepted_rtt_samples :
+                                         sr.accepted_rtt_samples),
+               protocol == PROTO_STOP_WAIT ? sw.rejected_rtt_samples :
+               (protocol == PROTO_GBN ? gbn.rejected_rtt_samples :
+                                         sr.rejected_rtt_samples),
+               protocol == PROTO_STOP_WAIT ? sw.initial_rto :
+               (protocol == PROTO_GBN ? gbn.initial_rto : sr.initial_rto),
+               protocol == PROTO_STOP_WAIT ? sw.rtt.rto :
+               (protocol == PROTO_GBN ? gbn.rto : sr.rto),
+               protocol == PROTO_STOP_WAIT ? 0 :
+               (protocol == PROTO_GBN ? gbn.fast_retransmissions : 0),
+               bytes > 0 ? (double)retransmissions /
+                   (double)(protocol == PROTO_STOP_WAIT ?
+                            (sw.packets_sent - sw.retransmissions) :
+                            (protocol == PROTO_GBN ? gbn.original_transmissions :
+                                                     sr.original_transmissions)) : 0.0,
+               hex,
                protocol == PROTO_STOP_WAIT ? 1 :
-               (protocol == PROTO_GBN ? gbn.window_size : SR_WINDOW_SIZE));
+               (protocol == PROTO_GBN ? gbn.window_size : sr.window_size));
     }
     fclose(file); closesocket(sock);
     return result ? 0 : 1;
 }
 
-static int receiver(const char *output, int port, Protocol protocol)
+static int receiver(const char *output, int port, Protocol protocol,
+                    uint32_t window_size)
 {
     FILE *file = NULL;
     SOCKET sock = INVALID_SOCKET;
@@ -267,13 +311,14 @@ static int receiver(const char *output, int port, Protocol protocol)
     uint64_t expected_bytes = 0, bytes = 0;
     Sha256Context hash;
     double started = 0.0;
-    int retransmissions = 0, done = 0, result = 1, hash_finalized = 0;
+    int done = 0, result = 1, hash_finalized = 0;
+    int packets_received = 0;
     uint32_t expected = 0;
-    Packet ordered[SR_WINDOW_SIZE];
-    unsigned char ordered_present[SR_WINDOW_SIZE] = {0};
-    SelectiveRepeatReceiverState sr_receiver;
-    GoBackNReceiverState gbn_receiver;
-    StopWaitState sw_receiver;
+    Packet ordered[SR_MAX_WINDOW_SIZE];
+    unsigned char ordered_present[SR_MAX_WINDOW_SIZE] = {0};
+    SelectiveRepeatReceiverState sr_receiver = {0};
+    GoBackNReceiverState gbn_receiver = {0};
+    StopWaitState sw_receiver = {0};
 
     expected_hash[0] = '\0';
     received_hash[0] = '\0';
@@ -295,7 +340,12 @@ static int receiver(const char *output, int port, Protocol protocol)
     file = fopen(output, "wb"); if (!file) goto fail;
     if (protocol == PROTO_STOP_WAIT) stop_wait_init(&sw_receiver, sock, &peer);
     else if (protocol == PROTO_GBN) gbn_receiver_init(&gbn_receiver, sock, &peer);
-    else sr_receiver_init(&sr_receiver, sock, &peer);
+    else {
+        sr_receiver_init(&sr_receiver, sock, &peer);
+        if (!sr_receiver_set_window_size(&sr_receiver, window_size)) {
+            goto fail;
+        }
+    }
 
     while (!done) {
         int received_result = receive_packet(sock, &packet, &peer);
@@ -305,6 +355,7 @@ static int receiver(const char *output, int port, Protocol protocol)
         if (received_result == 0) {
             continue;
         }
+        packets_received++;
         if (packet.type == PACKET_START &&
             packet.sequence_number == CONTROL_SEQUENCE) {
             send_control_ack(sock, &peer);
@@ -336,18 +387,20 @@ static int receiver(const char *output, int port, Protocol protocol)
             /* Keep a separate application queue because the protocol receiver
              * advances its internal buffer while acknowledging the packet. */
             sr_receiver_process(&sr_receiver, &packet);
-            if (packet.sequence_number >= expected &&
-                packet.sequence_number < expected + SR_WINDOW_SIZE) {
-                unsigned int slot = packet.sequence_number % SR_WINDOW_SIZE;
+            if (sequence_in_window(expected, packet.sequence_number,
+                                   sr_receiver.window_size)) {
+                unsigned int slot =
+                    packet.sequence_number % sr_receiver.window_size;
                 ordered[slot] = packet;
                 ordered_present[slot] = 1;
             }
-            while (ordered_present[expected % SR_WINDOW_SIZE]) {
-                Packet *delivered = &ordered[expected % SR_WINDOW_SIZE];
+            while (ordered_present[expected % sr_receiver.window_size]) {
+                Packet *delivered =
+                    &ordered[expected % sr_receiver.window_size];
                 fwrite(delivered->payload, 1, delivered->payload_length, file);
                 sha256_update(&hash, delivered->payload, delivered->payload_length);
                 bytes += delivered->payload_length;
-                ordered_present[expected % SR_WINDOW_SIZE] = 0;
+                ordered_present[expected % sr_receiver.window_size] = 0;
                 expected++;
             }
         }
@@ -385,16 +438,17 @@ fail:
     }
     {
         double elapsed = now_seconds() - started;
-        printf("METRIC protocol=%s bytes=%llu elapsed_seconds=%.6f "
-               "goodput_bytes_per_sec=%.3f retransmissions=%d source_sha256=%s "
-               "received_sha256=%s loss_rate=unknown window_size=%d "
-               "reorder_rate=unknown seed=unknown\n",
-               protocol_name(protocol), (unsigned long long)bytes, elapsed,
-               elapsed > 0.0 ? bytes / elapsed : 0.0, retransmissions,
+        printf("METRIC protocol=%s status=%s bytes=%llu elapsed_seconds=%.6f "
+               "goodput_bytes_per_sec=%.3f packets_received=%d "
+               "source_sha256=%s received_sha256=%s "
+               "window_size=%d\n",
+               protocol_name(protocol), result == 0 ? "success" : "failure",
+               (unsigned long long)bytes, elapsed,
+               elapsed > 0.0 ? bytes / elapsed : 0.0,
+               packets_received,
                expected_hash[0] ? expected_hash : "unknown",
                received_hash[0] ? received_hash : "unknown",
-               protocol == PROTO_STOP_WAIT ? 1 :
-               (protocol == PROTO_GBN ? GBN_WINDOW_SIZE : SR_WINDOW_SIZE));
+               protocol == PROTO_STOP_WAIT ? 1 : window_size);
     }
     if (file) fclose(file);
     closesocket(sock);
@@ -405,7 +459,8 @@ int main(int argc, char **argv)
 {
     WSADATA wsa;
     const char *protocol_text, *input, *output, *host = "127.0.0.1",
-               *port_text = "9000", *window_text = "4";
+               *port_text = "9000", *window_text = "4",
+               *initial_rto_text = "1.0";
     Protocol protocol;
     int port, status;
     if (argc < 2 || (strcmp(argv[1], "send") != 0 && strcmp(argv[1], "receive") != 0) ||
@@ -416,17 +471,22 @@ int main(int argc, char **argv)
     (void)argument(argc, argv, "--host", &host);
     (void)argument(argc, argv, "--port", &port_text);
     (void)argument(argc, argv, "--window", &window_text);
+    (void)argument(argc, argv, "--initial-rto", &initial_rto_text);
     port = atoi(port_text);
     {
         long parsed_window = strtol(window_text, NULL, 10);
-        if (port < 1 || port > 65535 ||
-            parsed_window < 1 || parsed_window > GBN_MAX_WINDOW_SIZE) {
+        double initial_rto = strtod(initial_rto_text, NULL);
+        if (port < 1 || port > 65535 || parsed_window < 1 ||
+            parsed_window > GBN_MAX_WINDOW_SIZE ||
+            (protocol == PROTO_SR && parsed_window > SR_MAX_WINDOW_SIZE) ||
+            initial_rto < GBN_MIN_RTO || initial_rto > GBN_MAX_RTO) {
             return 2;
         }
         if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return 1;
         status = strcmp(argv[1], "send") == 0 ?
-            sender(input, host, port, protocol, (uint32_t)parsed_window) :
-            receiver(output, port, protocol);
+            sender(input, host, port, protocol, (uint32_t)parsed_window,
+                   initial_rto) :
+            receiver(output, port, protocol, (uint32_t)parsed_window);
     }
     WSACleanup();
     return status;
