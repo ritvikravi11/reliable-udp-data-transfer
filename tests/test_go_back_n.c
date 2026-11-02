@@ -97,7 +97,9 @@ int main(void)
     struct sockaddr_in sender_address;
     struct sockaddr_in receiver_address;
     GoBackNState sender;
+    GoBackNState karn_sender;
     GoBackNReceiverState receiver;
+    GoBackNReceiverState karn_receiver;
     Packet packet;
     uint8_t payload = 0x42;
     int i;
@@ -162,14 +164,35 @@ int main(void)
     printf("stage=first-retry\n"); fflush(stdout);
     check(sender.retransmissions == 1 && sender.packets_sent == 2,
           "retransmission counters updated");
+    check(sender.timeout_count == 1, "timeout counter updated");
+    check(sender.rto >= GBN_MIN_RTO * 2.0,
+          "timeout applies exponential backoff");
+
+    gbn_init(&karn_sender, sender_socket, &receiver_address);
+    gbn_receiver_init(&karn_receiver, receiver_socket, &sender_address);
+    check(gbn_set_initial_rto(&karn_sender, GBN_MIN_RTO),
+          "configure GBN test RTO");
+    check(gbn_send(&karn_sender, &payload, 1),
+          "send Karn candidate");
+    process_one_data(receiver_socket, &karn_receiver, 1,
+                     "receive Karn candidate");
+    Sleep(1100);
+    check(gbn_retransmit_expired(&karn_sender) == 1,
+          "Karn candidate retransmits");
+    check(gbn_receive(&karn_sender, NULL) == 1,
+          "receive Karn ACK");
+    check(karn_sender.accepted_rtt_samples == 0 &&
+          karn_sender.rejected_rtt_samples == 1,
+          "GBN Karn rejects retransmitted RTT sample");
+
     for (i = 0; i < GBN_MAX_RETRIES - 1; ++i) {
-        sender.timer.start_time -= GBN_DEFAULT_RTO + 1.0;
+        sender.timer.start_time -= sender.rto + 1.0;
         check(gbn_retransmit_expired(&sender) == 1,
               "retry retransmission succeeds");
     }
     check(sender.retry_count == GBN_MAX_RETRIES,
           "retry count reaches configured limit");
-    sender.timer.start_time -= GBN_DEFAULT_RTO + 1.0;
+    sender.timer.start_time -= sender.rto + 1.0;
     check(gbn_retransmit_expired(&sender) == -1,
           "retry-limit failure is reported");
 

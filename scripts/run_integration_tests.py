@@ -47,7 +47,7 @@ def stop_process(process):
 
 
 def run_case(root, input_file, protocol, scenario, settings, seed, timeout,
-             keep_logs=False):
+             window, keep_logs=False):
     loss, duplicate, corrupt, reorder, delay, jitter = settings
     sender_port = free_port()
     receiver_port = free_port()
@@ -62,10 +62,9 @@ def run_case(root, input_file, protocol, scenario, settings, seed, timeout,
         receiver = subprocess.Popen(
             [
                 str(root / "file_transfer.exe"), "receive",
-                "--protocol", protocol, "--input", "unused",
+                "--protocol", protocol,                 "--input", "unused",
                 "--output", str(output_file), "--port", str(receiver_port),
-                "--window", str(settings.get("window", 4)
-                                if isinstance(settings, dict) else 4),
+                "--window", str(window),
             ],
             cwd=root, stdout=receiver_log, stderr=subprocess.STDOUT,
         )
@@ -86,7 +85,7 @@ def run_case(root, input_file, protocol, scenario, settings, seed, timeout,
                 str(root / "file_transfer.exe"), "send",
                 "--protocol", protocol, "--input", str(input_file),
                 "--output", "unused", "--host", "127.0.0.1",
-                "--port", str(sender_port), "--window", "4",
+                "--port", str(sender_port), "--window", str(window),
             ],
             cwd=root, stdout=sender_log, stderr=subprocess.STDOUT,
         )
@@ -131,6 +130,7 @@ def main():
     parser.add_argument("--scenario", choices=tuple(SCENARIOS))
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--timeout", type=int, default=45)
+    parser.add_argument("--window", type=int, default=4)
     parser.add_argument("--keep-logs", action="store_true")
     arguments = parser.parse_args()
     root = arguments.root.resolve()
@@ -149,7 +149,7 @@ def main():
                 ok, detail = run_case(
                     root, input_file, protocol, scenario,
                     SCENARIOS[scenario], arguments.seed, arguments.timeout
-                    , arguments.keep_logs
+                    , arguments.window, arguments.keep_logs
                 )
                 print(f"{protocol:18} {scenario:14} "
                       f"{'PASS' if ok else 'FAIL'} {detail}")

@@ -22,9 +22,17 @@ static double get_current_time()
 
 void rtt_init(RttEstimator *estimator)
 {
+    rtt_init_with_rto(estimator, 1.0);
+}
+
+void rtt_init_with_rto(RttEstimator *estimator, double initial_rto)
+{
+    if (initial_rto <= 0.0) {
+        initial_rto = 1.0;
+    }
     estimator->srtt = 0.0;
     estimator->rttvar = 0.0;
-    estimator->rto = 1.0;
+    estimator->rto = initial_rto;
     estimator->initialized = 0;
 }
 

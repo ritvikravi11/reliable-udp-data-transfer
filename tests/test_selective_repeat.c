@@ -41,6 +41,15 @@ int main(void)
     sr_init(&sender, INVALID_SOCKET, &peer);
     check(sender.base == 0 && sender.next_sequence_number == 0,
           "sender initialization");
+    check(sr_set_window_size(&sender, 8), "configure sender window");
+    check(sender.window_size == 8, "configured sender window stored");
+    check(!sr_set_window_size(&sender, SR_MAX_WINDOW_SIZE + 1U),
+          "reject oversized sender window");
+    check(sr_set_window_size(&sender, SR_WINDOW_SIZE),
+          "restore default sender window");
+    check(sr_set_initial_rto(&sender, 0.5), "configure initial RTO");
+    check(sender.initial_rto == 0.5 && sender.rto == 0.5,
+          "initial RTO stored");
     check(sr_send(NULL, &payload, 1) == 0, "NULL sender rejected");
     check(sr_send(&sender, NULL, 1) == 0, "NULL payload rejected");
     check(sr_send(&sender, &payload, (uint16_t)(MAX_PAYLOAD_SIZE + 1)) == 0,
@@ -55,6 +64,13 @@ int main(void)
     check(sr_send(&sender, &payload, 1) == 0, "full window rejected");
 
     sr_receiver_init(&receiver, INVALID_SOCKET, &peer);
+    check(sr_receiver_set_window_size(&receiver, 8),
+          "configure receiver window");
+    check(receiver.window_size == 8, "configured receiver window stored");
+    check(sr_receiver_set_window_size(&receiver, SR_MAX_WINDOW_SIZE + 1U) == 0,
+          "reject oversized receiver window");
+    check(sr_receiver_set_window_size(&receiver, SR_WINDOW_SIZE),
+          "restore default receiver window");
     check(sr_receiver_process(NULL, &packet) == -1, "NULL receiver rejected");
 
     packet = data_packet(2, "out of order");

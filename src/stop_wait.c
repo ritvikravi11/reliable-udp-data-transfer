@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define MIN_RTO 0.100
+#define MIN_RTO 0.250
 #define MAX_RTO 60.0
 
 
@@ -49,6 +49,7 @@ void stop_wait_init(
     rtt_init(&state->rtt);
 
     state->next_sequence_number = 0;
+    state->initial_rto = 1.0;
 }
 
 
@@ -125,6 +126,9 @@ int stop_wait_send(
         }
 
         state->packets_sent++;
+        if (!retransmitted) {
+            state->original_transmissions++;
+        }
 
         printf(
             "Sent DATA seq=%u%s\n",
@@ -227,17 +231,24 @@ int stop_wait_send(
             if (ack.acknowledgement_number != sequence_number &&
                 ack.sequence_number != sequence_number)
             {
+                state->duplicate_ack_count++;
                 continue;
             }
 
             double measured_rtt = timer_elapsed(&state->timer);
             timer_stop(&state->timer);
+            state->ack_count++;
 
             /*
              * Karn's Algorithm:
              * Ignore RTT samples for packets that were retransmitted.
              */
             rtt_update(&state->rtt, measured_rtt, retransmitted);
+            if (retransmitted) {
+                state->rejected_rtt_samples++;
+            } else {
+                state->accepted_rtt_samples++;
+            }
 
             if (state->rtt.rto < MIN_RTO)
             {
@@ -254,6 +265,7 @@ int stop_wait_send(
 
         /* The RTO expired without receiving the matching ACK. */
         attempts++;
+        state->timeout_count++;
 
         if (attempts >= STOP_WAIT_MAX_RETRIES)
         {
